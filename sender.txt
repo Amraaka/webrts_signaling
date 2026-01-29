@@ -1,0 +1,90 @@
+"""
+WebRTC sender: captures camera, sends video over WebRTC.
+Run the signaling server first, then start receiver (Notebook 2), then this sender (Notebook 1).
+Ctrl+C to stop.
+"""
+import asyncio
+import json
+import os
+import signal
+
+import cv2
+import websockets
+from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc.mediastreams import VideoStreamTrack
+from av import VideoFrame
+
+# Use SIGNALING_URL env var, or ws://localhost:3000 for local server.
+# For Render: wss://<your-app>.onrender.com (no /3000; Render uses PORT internally)
+SIGNALING = os.environ.get("SIGNALING_URL", "ws://localhost:3000")
+
+stop_event = asyncio.Event()
+
+
+class CameraTrack(VideoStreamTrack):
+    """Video track from webcam."""
+
+    def __init__(self):
+        super().__init__()
+        self.cap = cv2.VideoCapture(0)
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        ret, frame = self.cap.read()
+        if not ret:
+            raise Exception("Failed to read frame")
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        vf = VideoFrame.from_ndarray(frame, format="rgb24")
+        vf.pts = pts
+        vf.time_base = time_base
+        return vf
+
+    def stop(self):
+        self.cap.release()
+        super().stop()
+
+
+async def main():
+    pc = RTCPeerConnection()
+    track = CameraTrack()
+    pc.addTrack(track)
+
+    async with websockets.connect(SIGNALING) as ws:
+        offer = await pc.createOffer()
+        await pc.setLocalDescription(offer)
+
+        await ws.send(
+            json.dumps({"type": pc.localDescription.type, "sdp": pc.localDescription.sdp})
+        )
+
+        # Wait for answer from receiver
+        raw = await ws.recv()
+        answer = json.loads(raw)
+        desc = RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        await pc.setRemoteDescription(desc)
+
+        print("Connected. Sending camera stream. Ctrl+C to stop.")
+        try:
+            await stop_event.wait()
+        finally:
+            track.stop()
+            await pc.close()
+
+
+def _on_sigint():
+    stop_event.set()
+
+
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.add_signal_handler(signal.SIGINT, _on_sigint)
+    except (NotImplementedError, OSError):
+        pass  # Windows / some platforms: use Ctrl+C (may not cleanup gracefully)
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        stop_event.set()
+    finally:
+        loop.close()
