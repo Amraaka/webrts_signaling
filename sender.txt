@@ -2,6 +2,11 @@
 WebRTC sender: captures camera, sends video over WebRTC.
 Run the signaling server first, then start receiver (Notebook 2), then this sender (Notebook 1).
 Ctrl+C to stop.
+Sender sender.py: create RTCPeerConnection with:
+
+from aiortc import RTCConfiguration, RTCIceServer
+config = RTCConfiguration(iceServers=[RTCIceServer(urls="stun:stun.l.google.com:19302")])
+pc = RTCPeerConnection(configuration=config)
 """
 import asyncio
 import json
